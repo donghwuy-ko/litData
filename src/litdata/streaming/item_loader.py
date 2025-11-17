@@ -721,9 +721,23 @@ class ParquetLoader(BaseItemLoader):
 
         # Determine the row group and the row index within the row group
         parquet_file = self._df[chunk_index]
-        num_rows_per_row_group = parquet_file.metadata.row_group(0).num_rows
-        row_group_index = row_index // num_rows_per_row_group
-        row_index_within_group = row_index % num_rows_per_row_group
+
+        # Calculate row group index by iterating through actual row group sizes
+        # instead of assuming all row groups have the same size
+        cumulative_rows = 0
+        row_group_index = 0
+        num_rows_in_current_group = 0
+
+        for i in range(parquet_file.metadata.num_row_groups):
+            num_rows_in_current_group = parquet_file.metadata.row_group(i).num_rows
+            if cumulative_rows + num_rows_in_current_group > row_index:
+                row_group_index = i
+                row_index_within_group = row_index - cumulative_rows
+                break
+            cumulative_rows += num_rows_in_current_group
+        else:
+            # This should not happen if row_index is valid
+            raise IndexError(f"row_index {row_index} exceeds total rows {cumulative_rows}")
 
         # Check if the row group is already loaded
         if chunk_index in self._chunk_row_groups and row_group_index in self._chunk_row_groups[chunk_index]:
@@ -746,7 +760,7 @@ class ParquetLoader(BaseItemLoader):
 
         # Check if the row group has been fully read and release memory if necessary
         read_count = self._chunk_row_group_item_read_count[chunk_index][row_group_index]
-        if read_count >= num_rows_per_row_group:
+        if read_count >= num_rows_in_current_group:
             # Release memory for the fully read row group
             del self._chunk_row_groups[chunk_index][row_group_index]
             del self._chunk_row_group_item_read_count[chunk_index][row_group_index]
